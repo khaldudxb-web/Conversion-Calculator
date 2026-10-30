@@ -204,6 +204,83 @@
 
     .density-note strong { color: var(--ink); }
 
+    .support-panel {
+      margin-top: 24px;
+      padding: clamp(20px, 5vw, 30px);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      box-shadow: 0 12px 36px rgb(24 43 42 / 6%);
+    }
+
+    .support-panel h2 {
+      margin: 0 0 18px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(1.6rem, 5vw, 2.2rem);
+      font-weight: 500;
+    }
+
+    input:focus-visible, button:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 2px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .action-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .action-button {
+      min-height: 42px;
+      padding: 9px 14px;
+      border: 1px solid var(--green);
+      border-radius: 4px;
+      color: white;
+      background: var(--green);
+      font: inherit;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .action-button:hover:not(:disabled) { background: var(--green-dark); }
+    .action-button.secondary { color: var(--green-dark); background: transparent; }
+    .action-button.secondary:hover:not(:disabled) { background: #e8e9e1; }
+    .action-button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .memory-list {
+      display: grid;
+      gap: 8px;
+      margin: 16px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .memory-list li {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 6px 16px;
+      padding: 12px;
+      border-left: 3px solid var(--green);
+      background: #f1eee4;
+      font-size: 0.9rem;
+    }
+
+    .memory-list strong { color: var(--green-dark); }
+    .memory-empty { margin: 14px 0 0; color: var(--muted); font-size: 0.9rem; }
+
+    .support-message {
+      min-height: 1.3em;
+      margin: 12px 0 0;
+      color: var(--coral);
+      font-size: 0.85rem;
+    }
+
     footer {
       margin-top: 22px;
       color: var(--muted);
@@ -264,11 +341,23 @@
 
         <div class="result" aria-live="polite" aria-atomic="true">
           <p class="result-label">US gallons</p>
-          <output id="converted-value" for="amount density">328.405</output><span class="result-unit">US gal</span>
+          <output id="converted-value" for="amount density">328.572204</output><span class="result-unit">US gal</span>
         </div>
         <p class="message" id="message" role="status"></p>
         <p class="density-note" id="density-note"><strong>Density matters.</strong> The default 0.804 kg/L is an assumed material density. Change it to match your liquid; it is not a universal mass conversion.</p>
       </div>
+    </section>
+
+    <section class="support-panel" aria-labelledby="memory-heading">
+      <h2 id="memory-heading">Conversion memory</h2>
+      <p class="intro">Save conversion results here to keep them between visits.</p>
+      <div class="action-row">
+        <button class="action-button" id="save-memory" type="button" disabled>Save current result</button>
+        <button class="action-button secondary" id="clear-memory" type="button">Clear memory</button>
+      </div>
+      <p class="support-message" id="memory-message" role="status" aria-live="polite"></p>
+      <ul class="memory-list" id="memory-list" aria-label="Saved conversion results"></ul>
+      <p class="memory-empty" id="memory-empty">No saved conversion results.</p>
     </section>
 
     <footer>Liters convert directly. Metric tons, pounds, and kilograms are converted to volume using the selected density.</footer>
@@ -279,6 +368,8 @@
       const LITERS_PER_US_GALLON = 3.785411784;
       const KILOGRAMS_PER_POUND = 0.45359237;
       const DEFAULT_DENSITY_KG_PER_LITER = 0.804;
+      const MEMORY_STORAGE_KEY = "conversionCalculator.memory.v1";
+      const MAX_MEMORY_ITEMS = 50;
       const unitInfo = {
         metricTons: { name: "metric tons", abbreviation: "t" },
         liters: { name: "liters", abbreviation: "L" },
@@ -319,61 +410,171 @@
           return massToUSGallons(requireNonNegative(pounds, "Pounds") * KILOGRAMS_PER_POUND, densityKgPerLiter);
         },
         convertKilogramsToUSGallons(kilograms, densityKgPerLiter = DEFAULT_DENSITY_KG_PER_LITER) {
-          return massToUSGallons(kilograms, densityKgPerLiter);
+          return massToUSGallons(requireNonNegative(kilograms, "Kilograms"), densityKgPerLiter);
         }
       });
 
       window.conversionCalculator = conversionCalculator;
 
-      const buttons = [...document.querySelectorAll(".mode")];
       const amountInput = document.getElementById("amount");
       const densityInput = document.getElementById("density");
+      const convertedValue = document.getElementById("converted-value");
       const unitName = document.getElementById("unit-name");
       const unitAbbreviation = document.getElementById("unit-abbreviation");
-      const output = document.getElementById("converted-value");
       const message = document.getElementById("message");
-      let selectedUnit = "metricTons";
+      const modeButtons = Array.from(document.querySelectorAll(".mode"));
+      const saveMemoryButton = document.getElementById("save-memory");
+      const clearMemoryButton = document.getElementById("clear-memory");
+      const memoryList = document.getElementById("memory-list");
+      const memoryEmpty = document.getElementById("memory-empty");
+      const memoryMessage = document.getElementById("memory-message");
 
-      function calculate() {
-        const amount = Number(amountInput.value);
-        const density = Number(densityInput.value);
-        if (amountInput.value.trim() === "" || !Number.isFinite(amount) || amount < 0) {
-          output.value = "—";
-          message.textContent = "Enter a valid amount of zero or more.";
-          return;
+      let currentUnit = "metricTons";
+
+      function formatNumber(value) {
+        if (!Number.isFinite(value)) {
+          return "—";
         }
 
-        try {
-          const methodName = {
-            metricTons: "convertMetricTonsToUSGallons",
-            liters: "convertLitersToUSGallons",
-            pounds: "convertPoundsToUSGallons",
-            kilograms: "convertKilogramsToUSGallons"
-          }[selectedUnit];
-          const result = selectedUnit === "liters"
-            ? conversionCalculator[methodName](amount)
-            : conversionCalculator[methodName](amount, density);
-          output.value = new Intl.NumberFormat(undefined, { maximumFractionDigits: 6 }).format(result);
-          message.textContent = "";
-        } catch (error) {
-          output.value = "—";
-          message.textContent = error.message;
+        return new Intl.NumberFormat("en-US", {
+          maximumFractionDigits: 6,
+          minimumFractionDigits: 0
+        }).format(value);
+      }
+
+      function setUnit(unit) {
+        currentUnit = unit;
+        const info = unitInfo[unit];
+
+        unitName.textContent = info.name;
+        unitAbbreviation.textContent = info.abbreviation;
+
+        modeButtons.forEach((button) => {
+          const isActive = button.dataset.unit === unit;
+          button.setAttribute("aria-pressed", String(isActive));
+        });
+
+        const alwaysShowDensity = unit !== "liters";
+        densityInput.closest(".density-field").style.display = alwaysShowDensity ? "block" : "none";
+
+        if (unit === "liters") {
+          densityInput.value = String(DEFAULT_DENSITY_KG_PER_LITER);
+        }
+
+        updateConversion();
+      }
+
+      function calculateConversion() {
+        const amount = Number(amountInput.value);
+        const density = Number(densityInput.value);
+
+        switch (currentUnit) {
+          case "metricTons":
+            return conversionCalculator.convertMetricTonsToUSGallons(amount, density);
+          case "liters":
+            return conversionCalculator.convertLitersToUSGallons(amount);
+          case "pounds":
+            return conversionCalculator.convertPoundsToUSGallons(amount, density);
+          case "kilograms":
+            return conversionCalculator.convertKilogramsToUSGallons(amount, density);
+          default:
+            throw new RangeError("Unknown unit selected.");
         }
       }
 
-      buttons.forEach((button) => {
-        button.addEventListener("click", () => {
-          selectedUnit = button.dataset.unit;
-          buttons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
-          unitName.textContent = unitInfo[selectedUnit].name;
-          unitAbbreviation.textContent = unitInfo[selectedUnit].abbreviation;
-          calculate();
+      function updateConversion() {
+        try {
+          const result = calculateConversion();
+          convertedValue.textContent = formatNumber(result);
+          message.textContent = "";
+          saveMemoryButton.disabled = false;
+        } catch (error) {
+          convertedValue.textContent = "—";
+          message.textContent = error instanceof RangeError ? error.message : "Please enter valid values.";
+          saveMemoryButton.disabled = true;
+        }
+      }
+
+      function readMemory() {
+        try {
+          const raw = window.localStorage.getItem(MEMORY_STORAGE_KEY);
+          return raw ? JSON.parse(raw) : [];
+        } catch {
+          return [];
+        }
+      }
+
+      function writeMemory(entries) {
+        try {
+          window.localStorage.setItem(MEMORY_STORAGE_KEY, JSON.stringify(entries));
+        } catch {
+          memoryMessage.textContent = "Your browser blocked storage for this memory list.";
+        }
+      }
+
+      function renderMemory() {
+        const items = readMemory();
+        memoryList.innerHTML = "";
+
+        if (!items.length) {
+          memoryEmpty.hidden = false;
+          return;
+        }
+
+        memoryEmpty.hidden = true;
+        items.forEach((entry) => {
+          const item = document.createElement("li");
+          item.innerHTML = `<strong>${formatNumber(entry.value)} US gal</strong><span>${entry.label}</span>`;
+          memoryList.appendChild(item);
         });
+      }
+
+      function saveCurrentResult() {
+        try {
+          const value = Number(convertedValue.textContent.replace(/,/g, ""));
+          if (!Number.isFinite(value)) {
+            throw new RangeError("No valid result to save.");
+          }
+
+          const items = readMemory();
+          const entry = {
+            label: `${unitInfo[currentUnit].name} • ${formatNumber(Number(amountInput.value))} ${unitInfo[currentUnit].abbreviation}`,
+            value
+          };
+
+          const updated = [entry, ...items].slice(0, MAX_MEMORY_ITEMS);
+          writeMemory(updated);
+          renderMemory();
+          memoryMessage.textContent = "Current conversion saved.";
+        } catch (error) {
+          memoryMessage.textContent = error instanceof RangeError ? error.message : "Could not save this conversion.";
+        }
+      }
+
+      function clearMemory() {
+        try {
+          window.localStorage.removeItem(MEMORY_STORAGE_KEY);
+        } catch {
+          memoryMessage.textContent = "Could not clear the stored results.";
+          return;
+        }
+
+        memoryMessage.textContent = "Conversion memory cleared.";
+        renderMemory();
+      }
+
+      amountInput.addEventListener("input", updateConversion);
+      densityInput.addEventListener("input", updateConversion);
+
+      modeButtons.forEach((button) => {
+        button.addEventListener("click", () => setUnit(button.dataset.unit));
       });
 
-      amountInput.addEventListener("input", calculate);
-      densityInput.addEventListener("input", calculate);
-      calculate();
+      saveMemoryButton.addEventListener("click", saveCurrentResult);
+      clearMemoryButton.addEventListener("click", clearMemory);
+
+      setUnit(currentUnit);
+      renderMemory();
     })();
   </script>
 </body>
